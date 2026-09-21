@@ -11,6 +11,8 @@ Use this for correctness testing. Use Aer when the input is in superposition,
 which is only feasible for small round-reduced instances.
 """
 
+from params import block_to_words, words_to_block, key_to_words, words_to_key
+
 SUPPORTED_GATES = ("x", "cx", "ccx", "swap", "barrier", "id")
 
 
@@ -59,12 +61,16 @@ def _bits_to_word(bits):
     return sum(bit << j for j, bit in enumerate(bits))
 
 
-def pack_state(params, L, R, key_words=None):
+def pack_state_words(params, L, R, key_words=None):
     """
     Lay out a plaintext, and optionally a key, as a bit vector.
 
     Qubit order follows the registers built by quantum_simon: x, then y, then k
     when the key is quantum. Within a word, bit j sits at offset j.
+
+    Note that the left word is the high half of the block but occupies register
+    x, which is the low qubit indices. Going through the block level helpers
+    keeps that mapping in one place.
 
     INPUT
         params: SimonParams
@@ -83,7 +89,7 @@ def pack_state(params, L, R, key_words=None):
     return bits
 
 
-def unpack_state(params, bits, with_key=False):
+def unpack_state_words(params, bits, with_key=False):
     """
     Read a bit vector back as block words, and the key register if present.
 
@@ -106,9 +112,11 @@ def unpack_state(params, bits, with_key=False):
     return L, R, slots
 
 
-def run_block(circuit, params, L, R, key_words=None):
+def run_words(circuit, params, L, R, key_words=None):
     """
-    Convenience wrapper: load a block, run the circuit, read the block back.
+    Load two words, run the circuit, read the two words back.
+
+    This is the specification-shaped layer. Prefer run_block.
 
     INPUT
         circuit: a circuit from quantum_simon
@@ -119,5 +127,56 @@ def run_block(circuit, params, L, R, key_words=None):
         (L, R) when the key is fixed at build time
         (L, R, key_words) when the key is quantum
     """
-    out = evaluate(circuit, pack_state(params, L, R, key_words))
-    return unpack_state(params, out, with_key=key_words is not None)
+    out = evaluate(circuit, pack_state_words(params, L, R, key_words))
+    return unpack_state_words(params, out, with_key=key_words is not None)
+
+
+def pack_state(params, block, key=None):
+    """
+    Lay out a block, and optionally a key, as a bit vector.
+
+    INPUT
+        params: SimonParams
+        block: 2n-bit integer, left word in the high half
+        key: mn-bit integer when the circuit has a quantum key register
+    OUTPUT
+        list of bits
+    """
+    L, R = block_to_words(params, block)
+    key_words = None if key is None else key_to_words(params, key)
+    return pack_state_words(params, L, R, key_words)
+
+
+def unpack_state(params, bits, with_key=False):
+    """
+    Read a bit vector back as a block, and the key register if present.
+
+    INPUT
+        params: SimonParams
+        bits: list of bits as returned by evaluate
+        with_key: also return the mn-bit value sitting in the key register
+    OUTPUT
+        block, or (block, key)
+    """
+    if not with_key:
+        L, R = unpack_state_words(params, bits)
+        return words_to_block(params, L, R)
+    L, R, key_words = unpack_state_words(params, bits, with_key=True)
+    return words_to_block(params, L, R), words_to_key(params, key_words)
+
+
+def run_block(circuit, params, block, key=None):
+    """
+    Load a block, run the circuit, read the block back.
+
+    INPUT
+        circuit: a circuit from quantum_simon
+        params: SimonParams matching that circuit
+        block: 2n-bit input, left word in the high half
+        key: mn-bit key when the circuit has a quantum key register
+    OUTPUT
+        block when the key is fixed at build time
+        (block, key) when the key is quantum, where key is the register contents
+    """
+    out = evaluate(circuit, pack_state(params, block, key))
+    return unpack_state(params, out, with_key=key is not None)

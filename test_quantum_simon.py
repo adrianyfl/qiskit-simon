@@ -9,13 +9,20 @@ Runs under pytest, or directly with: python test_quantum_simon.py
 
 import random
 
-from params import simon_params, SIMON_PARAMS
-from classical_simon import simon_encrypt, simon_decrypt, words_from_hex
+from params import (
+    simon_params, SIMON_PARAMS,
+    words_to_block, key_to_words, words_to_key,
+)
+from classical_simon import (
+    simon_encrypt, simon_decrypt, words_from_hex, from_hex, key_expand,
+)
 from quantum_simon import (
     Word, build_simon_encrypt, build_simon_decrypt,
     round_function_gate, resource_counts,
 )
-from basis_simulator import evaluate, pack_state, run_block, SUPPORTED_GATES
+from basis_simulator import (
+    evaluate, pack_state, run_block, run_words, SUPPORTED_GATES,
+)
 from test_classical_simon import TEST_VECTORS, _split_block
 
 
@@ -34,7 +41,7 @@ def test_word_rotation_is_a_view():
 
 def test_circuit_uses_only_reversible_classical_gates():
     for (block_size, key_size) in SIMON_PARAMS:
-        for key in (None, [0] * SIMON_PARAMS[(block_size, key_size)].key_words):
+        for key in (None, 0):
             qc = build_simon_encrypt(block_size, key_size, key=key)
             for name in qc.count_ops():
                 assert name in SUPPORTED_GATES, f"unexpected gate {name} in Simon{block_size}/{key_size}"
@@ -43,38 +50,34 @@ def test_circuit_uses_only_reversible_classical_gates():
 def test_encryption_with_fixed_key_matches_paper_vectors():
     for block_size, key_size, key_text, pt_text, ct_text in TEST_VECTORS:
         params = simon_params(block_size, key_size)
-        key = words_from_hex(key_text)
-        pt, ct = _split_block(pt_text), _split_block(ct_text)
-        qc = build_simon_encrypt(block_size, key_size, key=key)
-        got = run_block(qc, params, pt[0], pt[1])
-        assert got == tuple(ct), (
-            f"Simon{block_size}/{key_size} fixed key: expected {ct}, got {list(got)}"
+        qc = build_simon_encrypt(block_size, key_size, key=from_hex(key_text))
+        got = run_block(qc, params, from_hex(pt_text))
+        assert got == from_hex(ct_text), (
+            f"Simon{block_size}/{key_size} fixed key: "
+            f"expected {from_hex(ct_text):#x}, got {got:#x}"
         )
 
 
 def test_encryption_with_quantum_key_matches_paper_vectors():
     for block_size, key_size, key_text, pt_text, ct_text in TEST_VECTORS:
         params = simon_params(block_size, key_size)
-        key = words_from_hex(key_text)
-        pt, ct = _split_block(pt_text), _split_block(ct_text)
         qc = build_simon_encrypt(block_size, key_size, key=None)
-        L, R, _ = run_block(qc, params, pt[0], pt[1], key_words=key)
-        assert (L, R) == tuple(ct), (
-            f"Simon{block_size}/{key_size} quantum key: expected {ct}, got {[L, R]}"
+        got, _ = run_block(qc, params, from_hex(pt_text), key=from_hex(key_text))
+        assert got == from_hex(ct_text), (
+            f"Simon{block_size}/{key_size} quantum key: "
+            f"expected {from_hex(ct_text):#x}, got {got:#x}"
         )
 
 
 def test_quantum_key_register_holds_the_last_round_keys():
     """The key register is left advanced, not restored. Confirm it is exactly
     the last m round keys, which makes the leftover state a known bijection."""
-    from classical_simon import key_expand
     for block_size, key_size, key_text, pt_text, _ in TEST_VECTORS:
         params = simon_params(block_size, key_size)
-        key = words_from_hex(key_text)
-        pt = _split_block(pt_text)
         qc = build_simon_encrypt(block_size, key_size, key=None)
-        _, _, slots = run_block(qc, params, pt[0], pt[1], key_words=key)
-        expanded = key_expand(params, key)
+        _, key_out = run_block(qc, params, from_hex(pt_text), key=from_hex(key_text))
+        slots = key_to_words(params, key_out)
+        expanded = key_expand(params, words_from_hex(key_text))
         m, T = params.key_words, params.rounds
         for i in range(T - m, T):
             assert slots[i % m] == expanded[i], (
@@ -85,56 +88,69 @@ def test_quantum_key_register_holds_the_last_round_keys():
 def test_decryption_recovers_plaintext_with_fixed_key():
     for block_size, key_size, key_text, pt_text, ct_text in TEST_VECTORS:
         params = simon_params(block_size, key_size)
-        key = words_from_hex(key_text)
-        pt, ct = _split_block(pt_text), _split_block(ct_text)
-        qc = build_simon_decrypt(block_size, key_size, key=key)
-        got = run_block(qc, params, ct[0], ct[1])
-        assert got == tuple(pt), (
-            f"Simon{block_size}/{key_size} decrypt: expected {pt}, got {list(got)}"
+        qc = build_simon_decrypt(block_size, key_size, key=from_hex(key_text))
+        got = run_block(qc, params, from_hex(ct_text))
+        assert got == from_hex(pt_text), (
+            f"Simon{block_size}/{key_size} decrypt: "
+            f"expected {from_hex(pt_text):#x}, got {got:#x}"
         )
 
 
 def test_decryption_restores_the_quantum_key_register():
     for block_size, key_size, key_text, pt_text, ct_text in TEST_VECTORS:
         params = simon_params(block_size, key_size)
-        key = words_from_hex(key_text)
-        pt, ct = _split_block(pt_text), _split_block(ct_text)
         qc = build_simon_decrypt(block_size, key_size, key=None)
-        L, R, slots = run_block(qc, params, ct[0], ct[1], key_words=key)
-        assert (L, R) == tuple(pt)
-        assert slots == key, (
+        got, key_out = run_block(qc, params, from_hex(ct_text), key=from_hex(key_text))
+        assert got == from_hex(pt_text)
+        assert key_out == from_hex(key_text), (
             f"Simon{block_size}/{key_size} decrypt should restore the key register"
         )
+
+
+def test_word_layer_agrees_with_block_layer():
+    """run_words is the specification-shaped layer and must stay in step."""
+    for block_size, key_size, key_text, pt_text, ct_text in TEST_VECTORS:
+        params = simon_params(block_size, key_size)
+        pt, ct = _split_block(pt_text), _split_block(ct_text)
+
+        fixed = build_simon_encrypt(block_size, key_size, key=from_hex(key_text))
+        assert run_words(fixed, params, pt[0], pt[1]) == tuple(ct)
+
+        quantum = build_simon_encrypt(block_size, key_size, key=None)
+        L, R, slots = run_words(quantum, params, pt[0], pt[1],
+                                key_words=words_from_hex(key_text))
+        assert (L, R) == tuple(ct)
+        assert words_to_key(params, slots) == run_block(
+            quantum, params, from_hex(pt_text), key=from_hex(key_text))[1]
 
 
 def test_round_reduced_matches_classical_reference():
     rng = random.Random(20250920)
     for (block_size, key_size), spec in SIMON_PARAMS.items():
-        n, m = spec.word_size, spec.key_words
+        m = spec.key_words
         # include an odd round count, which exercises the output swap
         for rounds in (m, m + 1, 5, spec.rounds // 2):
             if not m <= rounds <= spec.rounds:
                 continue
             params = simon_params(block_size, key_size, rounds)
-            key = [rng.getrandbits(n) for _ in range(m)]
-            L, R = rng.getrandbits(n), rng.getrandbits(n)
+            key = rng.getrandbits(key_size)
+            block = rng.getrandbits(block_size)
 
-            expected = simon_encrypt(block_size, key_size, L, R, key, rounds=rounds)
+            expected = simon_encrypt(block_size, key_size, block, key, rounds=rounds)
+
             fixed = build_simon_encrypt(block_size, key_size, key=key, rounds=rounds)
-            assert run_block(fixed, params, L, R) == expected, (
+            assert run_block(fixed, params, block) == expected, (
                 f"Simon{block_size}/{key_size} r={rounds} fixed key mismatch"
             )
 
             quantum = build_simon_encrypt(block_size, key_size, key=None, rounds=rounds)
-            qL, qR, _ = run_block(quantum, params, L, R, key_words=key)
-            assert (qL, qR) == expected, (
+            assert run_block(quantum, params, block, key=key)[0] == expected, (
                 f"Simon{block_size}/{key_size} r={rounds} quantum key mismatch"
             )
 
             back = build_simon_decrypt(block_size, key_size, key=key, rounds=rounds)
-            assert run_block(back, params, expected[0], expected[1]) == (L, R)
-            assert simon_decrypt(block_size, key_size, expected[0], expected[1],
-                                 key, rounds=rounds) == (L, R)
+            assert run_block(back, params, expected) == block
+            assert simon_decrypt(block_size, key_size, expected, key, rounds=rounds) == block
 
 
 def test_odd_round_count_swaps_words_without_normalisation():
@@ -143,16 +159,15 @@ def test_odd_round_count_swaps_words_without_normalisation():
     params = simon_params(128, 192)
     assert params.rounds % 2 == 1
 
-    key_text = "1716151413121110 0f0e0d0c0b0a0908 0706050403020100"
-    key = words_from_hex(key_text)
-    pt = _split_block("206572656874206e 6568772065626972")
-    ct = _split_block("c4ac61effcdc0d4f 6c9c8d6e2597b85b")
+    key = from_hex("1716151413121110 0f0e0d0c0b0a0908 0706050403020100")
+    pt = from_hex("206572656874206e 6568772065626972")
+    ct_words = _split_block("c4ac61effcdc0d4f 6c9c8d6e2597b85b")
 
     normalised = build_simon_encrypt(128, 192, key=key, swap_output=True)
-    assert run_block(normalised, params, pt[0], pt[1]) == tuple(ct)
+    assert run_block(normalised, params, pt) == words_to_block(params, *ct_words)
 
     raw = build_simon_encrypt(128, 192, key=key, swap_output=False)
-    assert run_block(raw, params, pt[0], pt[1]) == (ct[1], ct[0])
+    assert run_block(raw, params, pt) == words_to_block(params, ct_words[1], ct_words[0])
     assert raw.count_ops().get("swap", 0) == 0
 
 
@@ -164,9 +179,17 @@ def test_toffoli_and_qubit_counts_match_the_formulas():
         assert quantum["ccx"] == T * n, f"Simon{block_size}/{key_size} Toffoli count"
         assert quantum["qubits"] == 2 * n + m * n, f"Simon{block_size}/{key_size} qubit count"
 
-        fixed = resource_counts(build_simon_encrypt(block_size, key_size, key=[0] * m))
+        fixed = resource_counts(build_simon_encrypt(block_size, key_size, key=0))
         assert fixed["ccx"] == T * n
         assert fixed["qubits"] == 2 * n
+
+
+def test_oversized_key_is_rejected_by_the_builder():
+    try:
+        build_simon_encrypt(32, 64, key=1 << 64)
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for a key wider than the key size")
 
 
 def test_round_function_gate_is_inspectable():
@@ -194,14 +217,14 @@ def test_matches_aer_on_a_small_instance():
     from qiskit_aer import AerSimulator
 
     params = simon_params(32, 64, rounds=8)
-    key = words_from_hex("1918 1110 0908 0100")
-    L, R = 0x6565, 0x6877
+    key = from_hex("1918 1110 0908 0100")
+    block = from_hex("6565 6877")
 
     qc = build_simon_encrypt(32, 64, key=key, rounds=8)
-    expected = run_block(qc, params, L, R)
+    expected = run_block(qc, params, block)
 
     prepared = QuantumCircuit(*qc.qregs)
-    for position, bit in enumerate(pack_state(params, L, R)):
+    for position, bit in enumerate(pack_state(params, block)):
         if bit:
             prepared.x(position)
     prepared.compose(qc, inplace=True)
@@ -213,8 +236,12 @@ def test_matches_aer_on_a_small_instance():
 
     bitstring = next(iter(counts))[::-1]          # Qiskit prints most significant first
     n = params.word_size
-    measured = (int(bitstring[:n][::-1], 2), int(bitstring[n:2 * n][::-1], 2))
-    assert measured == expected, f"Aer gave {measured}, bit-vector gave {expected}"
+    measured = words_to_block(
+        params,
+        int(bitstring[:n][::-1], 2),
+        int(bitstring[n:2 * n][::-1], 2),
+    )
+    assert measured == expected, f"Aer gave {measured:#x}, bit-vector gave {expected:#x}"
 
 
 if __name__ == "__main__":

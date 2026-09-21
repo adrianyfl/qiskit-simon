@@ -3,8 +3,15 @@ Test vectors for all ten SIMON variants, from appendix B of the paper.
 Runs under pytest, or directly with: python test_classical_simon.py
 """
 
-from params import SIMON_PARAMS
-from classical_simon import S, words_from_hex, simon_encrypt, simon_decrypt
+from params import (
+    SIMON_PARAMS, simon_params,
+    block_to_words, words_to_block, key_to_words, words_to_key,
+)
+from classical_simon import (
+    S, words_from_hex, from_hex,
+    simon_encrypt, simon_decrypt,
+    simon_encrypt_words, simon_decrypt_words,
+)
 
 # (block_size, key_size, key, plaintext, ciphertext) exactly as printed in appendix B
 TEST_VECTORS = [
@@ -74,44 +81,98 @@ def test_all_variants_present():
         assert params.word_size * params.key_words == params.key_size
 
 
+def test_paper_spacing_is_cosmetic():
+    """The spaces the paper puts between words are formatting only, so the
+    printed text reads directly as one block or key integer."""
+    for block_size, key_size, key_text, pt_text, ct_text in TEST_VECTORS:
+        params = simon_params(block_size, key_size)
+        assert from_hex(pt_text) == words_to_block(params, *_split_block(pt_text))
+        assert from_hex(ct_text) == words_to_block(params, *_split_block(ct_text))
+        assert from_hex(key_text) == words_to_key(params, words_from_hex(key_text))
+
+
+def test_block_and_key_conversions_round_trip():
+    import random
+    rng = random.Random(0x5117)
+    for (block_size, key_size), params in SIMON_PARAMS.items():
+        for _ in range(20):
+            block = rng.getrandbits(block_size)
+            key = rng.getrandbits(key_size)
+            assert words_to_block(params, *block_to_words(params, block)) == block
+            assert words_to_key(params, key_to_words(params, key)) == key
+        # the left word is the high half of the block
+        L, R = block_to_words(params, block)
+        assert L == block >> params.word_size
+        assert R == block & ((1 << params.word_size) - 1)
+        # k[0] is the low word of the key
+        assert key_to_words(params, key)[0] == key & ((1 << params.word_size) - 1)
+
+
+def test_oversized_block_and_key_are_rejected():
+    params = simon_params(32, 64)
+    for call in (
+        lambda: block_to_words(params, 1 << 32),
+        lambda: key_to_words(params, 1 << 64),
+        lambda: words_to_block(params, 1 << 16, 0),
+        lambda: block_to_words(params, -1),
+        lambda: words_to_key(params, [0, 0, 0]),
+    ):
+        try:
+            call()
+        except ValueError:
+            continue
+        raise AssertionError("expected ValueError for an out of range value")
+
+
 def test_encryption_matches_paper_vectors():
     for block_size, key_size, key_text, pt_text, ct_text in TEST_VECTORS:
-        key = words_from_hex(key_text)
-        pt = _split_block(pt_text)
-        ct = _split_block(ct_text)
-        got = simon_encrypt(block_size, key_size, pt[0], pt[1], key)
-        assert got == tuple(ct), (
-            f"Simon{block_size}/{key_size} encrypt: expected {ct}, got {list(got)}"
+        got = simon_encrypt(block_size, key_size, from_hex(pt_text), from_hex(key_text))
+        assert got == from_hex(ct_text), (
+            f"Simon{block_size}/{key_size} encrypt: "
+            f"expected {from_hex(ct_text):#x}, got {got:#x}"
         )
 
 
 def test_decryption_recovers_plaintext():
     for block_size, key_size, key_text, pt_text, ct_text in TEST_VECTORS:
-        key = words_from_hex(key_text)
-        pt = _split_block(pt_text)
-        ct = _split_block(ct_text)
-        got = simon_decrypt(block_size, key_size, ct[0], ct[1], key)
-        assert got == tuple(pt), (
-            f"Simon{block_size}/{key_size} decrypt: expected {pt}, got {list(got)}"
+        got = simon_decrypt(block_size, key_size, from_hex(ct_text), from_hex(key_text))
+        assert got == from_hex(pt_text), (
+            f"Simon{block_size}/{key_size} decrypt: "
+            f"expected {from_hex(pt_text):#x}, got {got:#x}"
         )
+
+
+def test_word_layer_agrees_with_block_layer():
+    """The specification-shaped layer must stay in step with the block layer."""
+    for block_size, key_size, key_text, pt_text, ct_text in TEST_VECTORS:
+        params = simon_params(block_size, key_size)
+        key_word_list = words_from_hex(key_text)
+        pt = _split_block(pt_text)
+        assert simon_encrypt_words(block_size, key_size, pt[0], pt[1], key_word_list) \
+            == tuple(_split_block(ct_text))
+        ct = _split_block(ct_text)
+        assert simon_decrypt_words(block_size, key_size, ct[0], ct[1], key_word_list) \
+            == tuple(pt)
+        # and the block layer is exactly the word layer plus the encoding
+        assert simon_encrypt(block_size, key_size, from_hex(pt_text), from_hex(key_text)) \
+            == words_to_block(params, *_split_block(ct_text))
 
 
 def test_round_trip_on_random_blocks():
     import random
     rng = random.Random(0xc0ffee)
     for (block_size, key_size), params in SIMON_PARAMS.items():
-        n = params.word_size
         for _ in range(20):
-            key = [rng.getrandbits(n) for _ in range(params.key_words)]
-            L, R = rng.getrandbits(n), rng.getrandbits(n)
-            ct = simon_encrypt(block_size, key_size, L, R, key)
-            assert simon_decrypt(block_size, key_size, ct[0], ct[1], key) == (L, R)
+            key = rng.getrandbits(key_size)
+            block = rng.getrandbits(block_size)
+            ct = simon_encrypt(block_size, key_size, block, key)
+            assert simon_decrypt(block_size, key_size, ct, key) == block
 
 
 def test_wrong_key_word_count_is_rejected():
     for bad in ([], [0, 0, 0]):
         try:
-            simon_encrypt(32, 64, 0, 0, bad)
+            simon_encrypt_words(32, 64, 0, 0, bad)
         except ValueError:
             continue
         raise AssertionError(f"expected ValueError for key words {bad}")

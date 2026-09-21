@@ -39,6 +39,9 @@ def f(x, width):
 Split the paper's hex key notation into word values.
 The paper prints keys most significant word first, as k[m-1] ... k[0],
 so the text is reversed to give k[0] first.
+
+Kept because it documents the paper's ordering quirk. For a single integer key,
+which is what the block level functions take, use from_hex instead.
 INPUT
     text: whitespace separated hex words, e.g. "1918 1110 0908 0100"
 OUTPUT
@@ -48,6 +51,21 @@ OUTPUT
 
 def words_from_hex(text):
     return [int(word, 16) for word in text.split()][::-1]
+
+
+"""
+Read the paper's spaced hex notation as one integer.
+The spaces the paper puts between words are cosmetic, so "6565 6877" is the
+block 0x65656877 and "1918 1110 0908 0100" is the key 0x1918111009080100.
+INPUT
+    text: whitespace separated hex, e.g. "6565 6877"
+OUTPUT
+    integer
+"""
+
+
+def from_hex(text):
+    return int("".join(text.split()), 16)
 
 
 """
@@ -92,7 +110,10 @@ def key_expand(params, key_words):
 
 
 """
-SIMON 2n/mn encryption
+SIMON 2n/mn encryption on the two Feistel words.
+
+This is the specification-shaped layer. Prefer simon_encrypt, which takes one
+block integer and cannot have its two halves transposed by accident.
 INPUT
     block_size: size of the block, 2n
     key_size: size of the key, mn
@@ -105,7 +126,7 @@ OUTPUT
 """
 
 
-def simon_encrypt(block_size, key_size, L, R, key_words, rounds=None):
+def simon_encrypt_words(block_size, key_size, L, R, key_words, rounds=None):
     params = simon_params(block_size, key_size, rounds)
     n = params.word_size
     mask = (1 << n) - 1
@@ -118,8 +139,10 @@ def simon_encrypt(block_size, key_size, L, R, key_words, rounds=None):
 
 
 """
-SIMON 2n/mn decryption, the round function run in reverse
+SIMON 2n/mn decryption on the two Feistel words, the round function run in reverse
     R_k inverse (x, y) = (y, x ^ f(y) ^ k)
+
+This is the specification-shaped layer. Prefer simon_decrypt.
 INPUT
     block_size: size of the block, 2n
     key_size: size of the key, mn
@@ -132,7 +155,7 @@ OUTPUT
 """
 
 
-def simon_decrypt(block_size, key_size, L, R, key_words, rounds=None):
+def simon_decrypt_words(block_size, key_size, L, R, key_words, rounds=None):
     params = simon_params(block_size, key_size, rounds)
     n = params.word_size
     mask = (1 << n) - 1
@@ -141,3 +164,45 @@ def simon_decrypt(block_size, key_size, L, R, key_words, rounds=None):
     for k in reversed(key_expand(params, key_words)):
         L, R = R, L ^ f(R, n) ^ k
     return L, R
+
+
+"""
+SIMON 2n/mn encryption.
+INPUT
+    block_size: size of the block, 2n
+    key_size: size of the key, mn
+    block: 2n-bit plaintext, the left word in the high half
+    key: mn-bit key, k[0] in the low position
+    rounds: optional reduced round count, defaults to the spec value T
+OUTPUT
+    2n-bit ciphertext
+"""
+
+
+def simon_encrypt(block_size, key_size, block, key, rounds=None):
+    params = simon_params(block_size, key_size, rounds)
+    L, R = block_to_words(params, block)
+    L, R = simon_encrypt_words(block_size, key_size, L, R,
+                               key_to_words(params, key), rounds)
+    return words_to_block(params, L, R)
+
+
+"""
+SIMON 2n/mn decryption.
+INPUT
+    block_size: size of the block, 2n
+    key_size: size of the key, mn
+    block: 2n-bit ciphertext, the left word in the high half
+    key: mn-bit key, k[0] in the low position
+    rounds: optional reduced round count, defaults to the spec value T
+OUTPUT
+    2n-bit plaintext
+"""
+
+
+def simon_decrypt(block_size, key_size, block, key, rounds=None):
+    params = simon_params(block_size, key_size, rounds)
+    L, R = block_to_words(params, block)
+    L, R = simon_decrypt_words(block_size, key_size, L, R,
+                               key_to_words(params, key), rounds)
+    return words_to_block(params, L, R)

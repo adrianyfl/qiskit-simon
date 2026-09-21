@@ -67,3 +67,96 @@ def simon_params(block_size, key_size, rounds=None):
             f"{params.key_words} and {params.rounds}, got {rounds}"
         )
     return params._replace(rounds=rounds)
+
+
+# ----------------------------------------------------------------------------
+# Block and key encoding.
+#
+# A block is one 2n-bit integer holding both Feistel words, the left word in the
+# high half: block = (L << n) | R. A key is one mn-bit integer holding the m key
+# words, k[0] in the low position. Both match how the paper prints its test
+# vectors, where the spaces between words are cosmetic. "6565 6877" is the block
+# 0x65656877, and "1918 1110 0908 0100" is the key 0x1918111009080100.
+# ----------------------------------------------------------------------------
+
+
+def _check_width(value, width, label):
+    if value < 0:
+        raise ValueError(f"{label} must not be negative, got {value}")
+    if value >> width:
+        raise ValueError(
+            f"{label} does not fit in {width} bits, got {value:#x} "
+            f"which needs {value.bit_length()}"
+        )
+    return value
+
+
+def block_to_words(params, block):
+    """
+    Split a 2n-bit block into its two Feistel words.
+
+    INPUT
+        params: SimonParams
+        block: 2n-bit integer, left word in the high half
+    OUTPUT
+        (L, R)
+    """
+    n = params.word_size
+    _check_width(block, params.block_size, "block")
+    return block >> n, block & ((1 << n) - 1)
+
+
+def words_to_block(params, L, R):
+    """
+    Join two Feistel words into a 2n-bit block.
+
+    INPUT
+        params: SimonParams
+        L: left word, the paper's x
+        R: right word, the paper's y
+    OUTPUT
+        2n-bit integer
+    """
+    n = params.word_size
+    _check_width(L, n, "left word")
+    _check_width(R, n, "right word")
+    return (L << n) | R
+
+
+def key_to_words(params, key):
+    """
+    Split an mn-bit key into its m words.
+
+    INPUT
+        params: SimonParams
+        key: mn-bit integer, k[0] in the low position
+    OUTPUT
+        list of m key words ordered k[0] .. k[m-1]
+    """
+    n = params.word_size
+    _check_width(key, params.key_size, "key")
+    mask = (1 << n) - 1
+    return [(key >> (i * n)) & mask for i in range(params.key_words)]
+
+
+def words_to_key(params, key_words):
+    """
+    Join m key words into a single mn-bit key.
+
+    INPUT
+        params: SimonParams
+        key_words: list of m key words ordered k[0] .. k[m-1]
+    OUTPUT
+        mn-bit integer
+    """
+    if len(key_words) != params.key_words:
+        raise ValueError(
+            f"expected {params.key_words} key words for "
+            f"Simon{params.block_size}/{params.key_size}, got {len(key_words)}"
+        )
+    n = params.word_size
+    key = 0
+    for i, word in enumerate(key_words):
+        _check_width(word, n, f"key word {i}")
+        key |= word << (i * n)
+    return key

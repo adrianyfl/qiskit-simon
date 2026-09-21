@@ -19,7 +19,7 @@ tooling iterates circuit.data and expects primitives.
 
 from qiskit import QuantumCircuit, QuantumRegister
 
-from params import Z_SEQUENCES, Z_PERIOD, simon_params
+from params import Z_SEQUENCES, Z_PERIOD, simon_params, key_to_words
 from classical_simon import key_expand
 
 
@@ -127,7 +127,7 @@ def _setup(params, key):
     else:
         qc = QuantumCircuit(xr, yr)
         slots = None
-        round_keys = key_expand(params, key)
+        round_keys = key_expand(params, key_to_words(params, key))
 
     return qc, xr, yr, Word(xr), Word(yr), slots, round_keys
 
@@ -156,7 +156,7 @@ def build_simon_encrypt(block_size, key_size, key=None, rounds=None, swap_output
     INPUT
         block_size: size of the block, 2n
         key_size: size of the key, mn
-        key: list of m key words ordered k[0] .. k[m-1] to fix the key at build
+        key: mn-bit integer, k[0] in the low position, to fix the key at build
              time, or None to put the key in its own quantum register
         rounds: optional reduced round count, defaults to the spec value T
         swap_output: emit SWAPs so the left word always ends in register x

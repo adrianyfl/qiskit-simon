@@ -26,26 +26,37 @@ cross-check test, not for building circuits.
 from params import simon_params
 from quantum_simon import build_simon_encrypt
 from basis_simulator import run_block
-from classical_simon import words_from_hex
 
-key = words_from_hex("1918 1110 0908 0100")      # the paper prints k[m-1] first
+params = simon_params(32, 64)
 
 # key fixed at build time: 2n qubits, round keys become X gates
-circuit = build_simon_encrypt(32, 64, key=key)
-print(run_block(circuit, simon_params(32, 64), 0x6565, 0x6877))
-# (50843, 59835)  ==  c69b e9bb
+circuit = build_simon_encrypt(32, 64, key=0x1918111009080100)
+print(hex(run_block(circuit, params, 0x65656877)))
+# 0xc69be9bb
 
 # key in its own register: 2n + mn qubits, schedule computed reversibly
 circuit = build_simon_encrypt(32, 64, key=None)
-L, R, key_out = run_block(circuit, simon_params(32, 64), 0x6565, 0x6877, key_words=key)
+block, key_out = run_block(circuit, params, 0x65656877, key=0x1918111009080100)
 
 # round-reduced, for garbling or for simulation with the block in superposition
-small = build_simon_encrypt(32, 64, key=key, rounds=8)
+small = build_simon_encrypt(32, 64, key=0x1918111009080100, rounds=8)
 ```
+
+A block is one `2n`-bit integer with the left Feistel word in the high half, and
+a key is one `mn`-bit integer with `k[0]` in the low position. Both match the
+paper's printed vectors directly, since the spaces it puts between words are
+cosmetic. `Plaintext: 6565 6877` is the block `0x65656877`, and
+`classical_simon.from_hex` will read either form for you.
 
 `build_simon_decrypt` has the same signature. With a quantum key it restores the
 key register to the original key, which is not the same as inverting the
 encryption circuit.
+
+If you would rather work in the specification's two-word language, every
+operation has a word-level counterpart: `simon_encrypt_words`,
+`simon_decrypt_words`, and `run_words`. The block-level functions are those plus
+the encoding, and `params` exposes the conversions as `block_to_words`,
+`words_to_block`, `key_to_words`, and `words_to_key`.
 
 ## How it maps to a circuit
 
