@@ -99,13 +99,14 @@ INPUT
     L: left plaintext word, the paper's x
     R: right plaintext word, the paper's y
     key_words: list of m key words, ordered k[0] .. k[m-1]
+    rounds: optional reduced round count, defaults to the spec value T
 OUTPUT
     L, R ciphertext words
 """
 
 
-def simon_encrypt(block_size, key_size, L, R, key_words):
-    params = SIMON_PARAMS[(block_size, key_size)]
+def simon_encrypt(block_size, key_size, L, R, key_words, rounds=None):
+    params = simon_params(block_size, key_size, rounds)
     n = params.word_size
     mask = (1 << n) - 1
     L, R = L & mask, R & mask
@@ -125,13 +126,14 @@ INPUT
     L: left ciphertext word
     R: right ciphertext word
     key_words: list of m key words, ordered k[0] .. k[m-1]
+    rounds: optional reduced round count, defaults to the spec value T
 OUTPUT
     L, R plaintext words
 """
 
 
-def simon_decrypt(block_size, key_size, L, R, key_words):
-    params = SIMON_PARAMS[(block_size, key_size)]
+def simon_decrypt(block_size, key_size, L, R, key_words, rounds=None):
+    params = simon_params(block_size, key_size, rounds)
     n = params.word_size
     mask = (1 << n) - 1
     L, R = L & mask, R & mask

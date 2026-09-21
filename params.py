@@ -34,3 +34,36 @@ SIMON_PARAMS = {
     (128, 192): SimonParams(128, 192, 64, 3, 3, 69),
     (128, 256): SimonParams(128, 256, 64, 4, 4, 72),
 }
+
+
+def simon_params(block_size, key_size, rounds=None):
+    """Look up a variant, optionally reducing the round count.
+
+    Round-reduced instances keep every other parameter at spec. They are the
+    standard object of study in the cryptanalysis literature, and they are the
+    only way the quantum circuits stay small enough to be garbled or simulated
+    with the block held in superposition.
+
+    INPUT
+        block_size: size of the block, 2n
+        key_size: size of the key, mn
+        rounds: optional round count, defaults to the spec value T
+    OUTPUT
+        SimonParams
+    """
+    try:
+        params = SIMON_PARAMS[(block_size, key_size)]
+    except KeyError:
+        available = ", ".join(f"{b}/{k}" for b, k in sorted(SIMON_PARAMS))
+        raise KeyError(
+            f"Simon{block_size}/{key_size} is not a defined variant, choose from: {available}"
+        ) from None
+
+    if rounds is None:
+        return params
+    if not params.key_words <= rounds <= params.rounds:
+        raise ValueError(
+            f"rounds for Simon{block_size}/{key_size} must be between "
+            f"{params.key_words} and {params.rounds}, got {rounds}"
+        )
+    return params._replace(rounds=rounds)

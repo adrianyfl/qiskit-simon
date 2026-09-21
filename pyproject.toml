@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qiskit-simon"
+version = "0.1.0"
+description = "The SIMON family of lightweight block ciphers as reversible Qiskit circuits"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["qiskit", "quantum", "cryptography", "block-cipher", "simon", "reversible"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "qiskit>=1.0,<3",
+]
+
+[project.optional-dependencies]
+simulation = ["qiskit-aer>=0.14"]
+dev = ["pytest>=8", "qiskit-aer>=0.14"]
+
+[tool.setuptools]
+py-modules = [
+    "params",
+    "classical_simon",
+    "quantum_simon",
+    "basis_simulator",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
