@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 simulation = ["qiskit-aer>=0.14"]
 dev = ["pytest>=8", "qiskit-aer>=0.14"]
+optimize = ["tzap>=0.6", "mqt.qcec>=3", "qiskit-aer>=0.14"]
 
 [tool.setuptools]
 py-modules = [
@@ -29,6 +30,7 @@ py-modules = [
     "classical_simon",
     "quantum_simon",
     "basis_simulator",
+    "tzap_optimize",
 ]
 
 [tool.pytest.ini_options]

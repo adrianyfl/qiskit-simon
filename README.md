@@ -110,6 +110,40 @@ built circuits.
 | Simon128/192 | 320 | 128 | 4416 | 17280 |
 | Simon128/256 | 384 | 128 | 4608 | 26624 |
 
+### T-count optimisation with tzap
+
+Pass `optimize` to either builder to get a Clifford+T circuit optimised by
+[tzap](https://github.com/qqq-wisc/tzap):
+
+```bash
+pip install -e ".[optimize]"
+```
+
+```python
+circuit = build_simon_encrypt(32, 64, key=None, optimize="O3")
+```
+
+Each CCX is lowered to the standard 7-T decomposition, then tzap phase-folds.
+Within a round every `x` qubit controls two Toffolis, so two T phases on it merge
+into one S. That brings every variant from 7 to 5 T gates per Toffoli, a 28.6%
+cut, with CX, H, and qubit counts unchanged. `O3` and `Osuper` give the same
+result.
+
+| Variant | T, 7-T lowering | T, tzap |
+|---|---|---|
+| Simon32/64 | 3584 | 2560 |
+| Simon64/128 | 9856 | 7040 |
+| Simon96/144 | 18144 | 12960 |
+| Simon128/256 | 32256 | 23040 |
+
+The result is equal to the original up to global phase, but it is no longer
+X/CX/CCX, so `basis_simulator` cannot run it. `tzap_optimize.simulate_basis`
+runs it with Aer instead, and `python tzap_optimize.py` benchmarks every
+variant. That script also proves each optimised circuit equivalent with the
+MQT QCEC ZX checker and cross-checks random inputs bit for bit. The ZX proof
+succeeds for every case except Simon128/256 with a quantum key, where it times
+out without a verdict.
+
 ## Testing
 
 ```bash
@@ -134,6 +168,7 @@ key register restoration.
 | `classical_simon.py` | Plain Python reference, key expansion, encrypt, decrypt |
 | `quantum_simon.py` | Word views, round function, key schedule, circuit builders |
 | `basis_simulator.py` | Exact basis-state evaluation of a reversible circuit |
+| `tzap_optimize.py` | tzap T-count optimisation, verification, and benchmark |
 
 ## Using this as a submodule
 

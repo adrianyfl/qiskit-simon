@@ -14,7 +14,9 @@ significant first. This matches Qiskit's little endian ordering, so a measured
 bitstring reversed is the word value.
 
 Circuits are emitted flat, as primitive X, CX, and CCX, because downstream
-tooling iterates circuit.data and expects primitives.
+tooling iterates circuit.data and expects primitives. The optional optimize
+argument instead returns a tzap-optimised Clifford+T circuit, which
+basis_simulator cannot run.
 """
 
 from qiskit import QuantumCircuit, QuantumRegister
@@ -149,7 +151,18 @@ def _normalise_output(qc, xr, yr, params, swap_output):
     return True
 
 
-def build_simon_encrypt(block_size, key_size, key=None, rounds=None, swap_output=True):
+def _finish(qc, name, optimize):
+    qc.name = name
+    if optimize is None:
+        return qc
+    from tzap_optimize import optimize_circuit
+    optimized = optimize_circuit(qc, level=optimize)
+    optimized.name = name
+    return optimized
+
+
+def build_simon_encrypt(block_size, key_size, key=None, rounds=None, swap_output=True,
+                        optimize=None):
     """
     SIMON 2n/mn encryption circuit.
 
@@ -160,6 +173,9 @@ def build_simon_encrypt(block_size, key_size, key=None, rounds=None, swap_output
              time, or None to put the key in its own quantum register
         rounds: optional reduced round count, defaults to the spec value T
         swap_output: emit SWAPs so the left word always ends in register x
+        optimize: None for the X/CX/CCX circuit, or a tzap level ("O1", "O2",
+                  "O3", "Osuper") to return an optimised Clifford+T circuit,
+                  equal up to global phase. Needs the optimize extra.
     OUTPUT
         QuantumCircuit over registers x, y, and k when the key is quantum
 
@@ -181,11 +197,12 @@ def build_simon_encrypt(block_size, key_size, key=None, rounds=None, swap_output
         x, y = y, x                      # Feistel exchange, no gates
 
     _normalise_output(qc, xr, yr, params, swap_output)
-    qc.name = f"simon{block_size}/{key_size}" + ("" if rounds is None else f"-r{T}")
-    return qc
+    name = f"simon{block_size}/{key_size}" + ("" if rounds is None else f"-r{T}")
+    return _finish(qc, name, optimize)
 
 
-def build_simon_decrypt(block_size, key_size, key=None, rounds=None, swap_output=True):
+def build_simon_decrypt(block_size, key_size, key=None, rounds=None, swap_output=True,
+                        optimize=None):
     """
     SIMON 2n/mn decryption circuit, the inverse round applied T times.
 
@@ -216,8 +233,8 @@ def build_simon_decrypt(block_size, key_size, key=None, rounds=None, swap_output
             _apply_key_step(qc, slots, i, params)   # self inverse, so this steps back
 
     _normalise_output(qc, xr, yr, params, swap_output)
-    qc.name = f"simon{block_size}/{key_size}-inv" + ("" if rounds is None else f"-r{T}")
-    return qc
+    name = f"simon{block_size}/{key_size}-inv" + ("" if rounds is None else f"-r{T}")
+    return _finish(qc, name, optimize)
 
 
 def round_function_gate(word_size):
