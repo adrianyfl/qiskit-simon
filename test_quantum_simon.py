@@ -21,7 +21,7 @@ from quantum_simon import (
     round_function_gate, resource_counts,
 )
 from basis_simulator import (
-    evaluate, pack_state, run_block, run_words, SUPPORTED_GATES,
+    evaluate, pack_state, run_block, run_words, run_blocks, SUPPORTED_GATES,
 )
 from test_classical_simon import TEST_VECTORS, _split_block
 
@@ -182,6 +182,68 @@ def test_toffoli_and_qubit_counts_match_the_formulas():
         fixed = resource_counts(build_simon_encrypt(block_size, key_size, key=0))
         assert fixed["ccx"] == T * n
         assert fixed["qubits"] == 2 * n
+
+
+def test_multi_block_encryption_matches_classical_reference():
+    rng = random.Random(20260925)
+    for (block_size, key_size), spec in SIMON_PARAMS.items():
+        m = spec.key_words
+        for rounds in (m + 1, spec.rounds):
+            params = simon_params(block_size, key_size, rounds)
+            key = rng.getrandbits(key_size)
+            blocks = [rng.getrandbits(block_size) for _ in range(3)]
+            expected = [simon_encrypt(block_size, key_size, b, key, rounds=rounds) for b in blocks]
+
+            fixed = build_simon_encrypt(block_size, key_size, key=key, rounds=rounds, num_blocks=3)
+            assert run_blocks(fixed, params, blocks) == expected
+
+            quantum = build_simon_encrypt(block_size, key_size, key=None, rounds=rounds, num_blocks=3)
+            got, key_out = run_blocks(quantum, params, blocks, key=key)
+            assert got == expected, f"Simon{block_size}/{key_size} r={rounds} multi-block mismatch"
+            # the shared register advances exactly as it does for one block
+            assert key_out == run_block(
+                build_simon_encrypt(block_size, key_size, key=None, rounds=rounds),
+                params, blocks[0], key=key)[1]
+
+
+def test_multi_block_decryption_restores_blocks_and_key():
+    rng = random.Random(7)
+    for (block_size, key_size), spec in SIMON_PARAMS.items():
+        params = simon_params(block_size, key_size)
+        key = rng.getrandbits(key_size)
+        blocks = [rng.getrandbits(block_size) for _ in range(3)]
+        cts = [simon_encrypt(block_size, key_size, b, key) for b in blocks]
+
+        quantum = build_simon_decrypt(block_size, key_size, key=None, num_blocks=3)
+        assert run_blocks(quantum, params, cts, key=key) == (blocks, key)
+
+        fixed = build_simon_decrypt(block_size, key_size, key=key, num_blocks=3)
+        assert run_blocks(fixed, params, cts) == blocks
+
+
+def test_key_schedule_is_paid_once_per_key():
+    """With B blocks the round work scales with B but the key schedule does not."""
+    B = 4
+    for (block_size, key_size), spec in SIMON_PARAMS.items():
+        n, m, T = spec.word_size, spec.key_words, spec.rounds
+        for build in (build_simon_encrypt, build_simon_decrypt):
+            one = resource_counts(build(block_size, key_size, key=None))
+            many = resource_counts(build(block_size, key_size, key=None, num_blocks=B))
+            round_cx = 2 * T * n                 # S^2 x and round key XORs per block
+            assert many["qubits"] == 2 * n * B + m * n
+            assert many["ccx"] == B * T * n
+            assert many["cx"] - B * round_cx == one["cx"] - round_cx
+            assert many["x"] == one["x"]
+            assert many["swap"] == B * one["swap"]
+
+
+def test_num_blocks_must_be_positive():
+    for bad in (0, -1, 1.5):
+        try:
+            build_simon_encrypt(32, 64, num_blocks=bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"expected ValueError for num_blocks={bad!r}")
 
 
 def test_oversized_key_is_rejected_by_the_builder():

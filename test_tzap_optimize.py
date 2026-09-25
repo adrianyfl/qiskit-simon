@@ -85,6 +85,13 @@ def test_builder_optimize_handles_odd_round_swaps():
         unpack_state(params, evaluate(reference, pack_state(params, block)))
 
 
+def test_builder_optimize_with_shared_key_schedule():
+    original = build_simon_encrypt(32, 64, key=None, rounds=8, num_blocks=2)
+    optimized = build_simon_encrypt(32, 64, key=None, rounds=8, num_blocks=2, optimize="O1")
+    assert optimized.name == "simon32/64-r8-x2"
+    assert verify_by_simulation(original, optimized, 3, random.Random(3)) == 3
+
+
 def test_zx_proves_equivalence():
     pytest.importorskip("mqt.qcec")
     original = build_simon_encrypt(32, 64, key=None)

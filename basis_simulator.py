@@ -180,3 +180,39 @@ def run_block(circuit, params, block, key=None):
     """
     out = evaluate(circuit, pack_state(params, block, key))
     return unpack_state(params, out, with_key=key is not None)
+
+
+def pack_blocks(params, blocks, key=None):
+    """
+    Lay out several blocks, and optionally a key, for a num_blocks circuit.
+
+    Qubit order is x0, y0, x1, y1, ..., then k, as built by quantum_simon.
+    """
+    bits = []
+    for block in blocks:
+        bits += pack_state(params, block)
+    if key is not None:
+        bits += pack_state_words(params, 0, 0, key_to_words(params, key))[2 * params.word_size:]
+    return bits
+
+
+def unpack_blocks(params, bits, num_blocks, with_key=False):
+    """Read back num_blocks blocks, and the key register contents if present."""
+    width = params.block_size
+    blocks = [unpack_state(params, bits[b * width:(b + 1) * width]) for b in range(num_blocks)]
+    if not with_key:
+        return blocks
+    _, key = unpack_state(params, [0] * width + bits[num_blocks * width:], with_key=True)
+    return blocks, key
+
+
+def run_blocks(circuit, params, blocks, key=None):
+    """
+    Load several blocks, run a num_blocks circuit, read them back.
+
+    OUTPUT
+        list of blocks when the key is fixed at build time
+        (list of blocks, key) when the key is quantum
+    """
+    out = evaluate(circuit, pack_blocks(params, blocks, key))
+    return unpack_blocks(params, out, len(blocks), with_key=key is not None)

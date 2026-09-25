@@ -115,23 +115,31 @@ def _apply_key_step(qc, slots, i, params):
             qc.x(target[j])
 
 
-def _setup(params, key):
-    """Build the empty circuit and the word views for a variant."""
+def _setup(params, key, num_blocks):
+    """
+    Build the empty circuit, one (x, y) register pair per block, and the key.
+
+    Registers are laid out x0, y0, x1, y1, ..., then k. A single block keeps
+    the plain names x and y.
+    """
+    if not isinstance(num_blocks, int) or num_blocks < 1:
+        raise ValueError(f"num_blocks must be a positive integer, got {num_blocks!r}")
     n, m = params.word_size, params.key_words
-    xr = QuantumRegister(n, "x")
-    yr = QuantumRegister(n, "y")
+    suffixes = [""] if num_blocks == 1 else [str(b) for b in range(num_blocks)]
+    pairs = [(QuantumRegister(n, f"x{s}"), QuantumRegister(n, f"y{s}")) for s in suffixes]
+    registers = [reg for pair in pairs for reg in pair]
 
     if key is None:
         kr = QuantumRegister(m * n, "k")
-        qc = QuantumCircuit(xr, yr, kr)
+        qc = QuantumCircuit(*registers, kr)
         slots = [Word(kr[j * n:(j + 1) * n]) for j in range(m)]
         round_keys = None
     else:
-        qc = QuantumCircuit(xr, yr)
+        qc = QuantumCircuit(*registers)
         slots = None
         round_keys = key_expand(params, key_to_words(params, key))
 
-    return qc, xr, yr, Word(xr), Word(yr), slots, round_keys
+    return qc, pairs, slots, round_keys
 
 
 def _normalise_output(qc, xr, yr, params, swap_output):
@@ -161,8 +169,14 @@ def _finish(qc, name, optimize):
     return optimized
 
 
+def _name(block_size, key_size, rounds, T, num_blocks, suffix=""):
+    return (f"simon{block_size}/{key_size}{suffix}"
+            + ("" if rounds is None else f"-r{T}")
+            + ("" if num_blocks == 1 else f"-x{num_blocks}"))
+
+
 def build_simon_encrypt(block_size, key_size, key=None, rounds=None, swap_output=True,
-                        optimize=None):
+                        optimize=None, num_blocks=1):
     """
     SIMON 2n/mn encryption circuit.
 
@@ -176,8 +190,12 @@ def build_simon_encrypt(block_size, key_size, key=None, rounds=None, swap_output
         optimize: None for the X/CX/CCX circuit, or a tzap level ("O1", "O2",
                   "O3", "Osuper") to return an optimised Clifford+T circuit,
                   equal up to global phase. Needs the optimize extra.
+        num_blocks: encrypt this many blocks under the one key. Each round key
+                    is produced once and applied to every block, so the key
+                    schedule is paid once per key rather than once per block.
     OUTPUT
-        QuantumCircuit over registers x, y, and k when the key is quantum
+        QuantumCircuit over registers x, y, and k when the key is quantum, or
+        x0, y0, x1, y1, ..., k when num_blocks > 1
 
     With a quantum key the key register is left holding the last m round keys,
     not the original key. That is a bijection of the key, so it is reversible,
@@ -185,24 +203,26 @@ def build_simon_encrypt(block_size, key_size, key=None, rounds=None, swap_output
     """
     params = simon_params(block_size, key_size, rounds)
     m, T = params.key_words, params.rounds
-    qc, xr, yr, x, y, slots, round_keys = _setup(params, key)
+    qc, pairs, slots, round_keys = _setup(params, key, num_blocks)
+    words = [(Word(xr), Word(yr)) for xr, yr in pairs]
 
     for i in range(T):
-        if key is None:
-            if i >= m:
-                _apply_key_step(qc, slots, i, params)
-            _apply_round(qc, x, y, round_key=slots[i % m])
-        else:
-            _apply_round(qc, x, y, key_bits=round_keys[i])
-        x, y = y, x                      # Feistel exchange, no gates
+        if key is None and i >= m:
+            _apply_key_step(qc, slots, i, params)
+        for b, (x, y) in enumerate(words):
+            if key is None:
+                _apply_round(qc, x, y, round_key=slots[i % m])
+            else:
+                _apply_round(qc, x, y, key_bits=round_keys[i])
+            words[b] = (y, x)            # Feistel exchange, no gates
 
-    _normalise_output(qc, xr, yr, params, swap_output)
-    name = f"simon{block_size}/{key_size}" + ("" if rounds is None else f"-r{T}")
-    return _finish(qc, name, optimize)
+    for xr, yr in pairs:
+        _normalise_output(qc, xr, yr, params, swap_output)
+    return _finish(qc, _name(block_size, key_size, rounds, T, num_blocks), optimize)
 
 
 def build_simon_decrypt(block_size, key_size, key=None, rounds=None, swap_output=True,
-                        optimize=None):
+                        optimize=None, num_blocks=1):
     """
     SIMON 2n/mn decryption circuit, the inverse round applied T times.
 
@@ -212,29 +232,32 @@ def build_simon_decrypt(block_size, key_size, key=None, rounds=None, swap_output
     ciphertext together with the original key, so with a quantum key it first
     runs the key schedule forward to reach k[T-1], then walks it back one step
     per round. The key register is restored to the original key at the end.
+    With num_blocks > 1 both walks are shared by every block.
 
     INPUT and OUTPUT are as for build_simon_encrypt.
     """
     params = simon_params(block_size, key_size, rounds)
     m, T = params.key_words, params.rounds
-    qc, xr, yr, x, y, slots, round_keys = _setup(params, key)
+    qc, pairs, slots, round_keys = _setup(params, key, num_blocks)
+    words = [(Word(xr), Word(yr)) for xr, yr in pairs]
 
     if key is None:
         for i in range(m, T):            # advance the register to the last round keys
             _apply_key_step(qc, slots, i, params)
 
     for i in reversed(range(T)):
-        if key is None:
-            _apply_round(qc, y, x, round_key=slots[i % m])
-        else:
-            _apply_round(qc, y, x, key_bits=round_keys[i])
-        x, y = y, x
+        for b, (x, y) in enumerate(words):
+            if key is None:
+                _apply_round(qc, y, x, round_key=slots[i % m])
+            else:
+                _apply_round(qc, y, x, key_bits=round_keys[i])
+            words[b] = (y, x)
         if key is None and i >= m:
             _apply_key_step(qc, slots, i, params)   # self inverse, so this steps back
 
-    _normalise_output(qc, xr, yr, params, swap_output)
-    name = f"simon{block_size}/{key_size}-inv" + ("" if rounds is None else f"-r{T}")
-    return _finish(qc, name, optimize)
+    for xr, yr in pairs:
+        _normalise_output(qc, xr, yr, params, swap_output)
+    return _finish(qc, _name(block_size, key_size, rounds, T, num_blocks, "-inv"), optimize)
 
 
 def round_function_gate(word_size):
@@ -256,8 +279,8 @@ def resource_counts(circuit):
     """
     Gate and qubit counts for a built circuit.
 
-    Toffoli count is T*n and qubit count is 2n + mn with a quantum key, but
-    counting the real circuit is the honest way to report it.
+    Toffoli count is B*T*n and qubit count is 2nB + mn for B blocks with a
+    quantum key, but counting the real circuit is the honest way to report it.
     """
     ops = circuit.count_ops()
     return {

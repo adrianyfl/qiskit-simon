@@ -110,6 +110,38 @@ built circuits.
 | Simon128/192 | 320 | 128 | 4416 | 17280 |
 | Simon128/256 | 384 | 128 | 4608 | 26624 |
 
+### Several blocks under one key
+
+With a quantum key, each encryption normally runs its own key schedule. Pass
+`num_blocks` to encrypt several blocks in one circuit that shares a single key
+register. Each round key is produced once and applied to every block, so the
+schedule is paid once per key rather than once per block, and needs no extra
+qubits.
+
+```python
+from basis_simulator import run_blocks
+
+circuit = build_simon_encrypt(32, 64, key=None, num_blocks=8)
+blocks, key_out = run_blocks(circuit, params, [0x65656877] * 8, key=0x1918111009080100)
+```
+
+Registers are laid out `x0, y0, x1, y1, …, k`. `build_simon_decrypt` takes the
+same option and still restores the key register. The key schedule is linear, so
+this saves CX and X gates, not Toffolis. Compared with running `B` separate
+quantum-key encryptions:
+
+| Variant | Blocks | CX, separate | CX, shared | X, separate | X, shared | Qubits, separate | Qubits, shared |
+|---|---|---|---|---|---|---|---|
+| Simon32/64 | 8 | 22528 | 9984 | 3248 | 406 | 768 | 320 |
+| Simon32/64 | 64 | 180224 | 67328 | 25984 | 406 | 6144 | 2112 |
+| Simon64/128 | 64 | 507904 | 185344 | 78016 | 1219 | 12288 | 4224 |
+| Simon128/256 | 64 | 1703936 | 607232 | 272000 | 4250 | 24576 | 8448 |
+
+The saving grows with the number of blocks: at 64 blocks, Simon128/256 needs
+9488 CX per block instead of 26624. The qubit saving assumes the separate
+encryptions each hold their own copy of the key. The option combines with
+`optimize`.
+
 ### T-count optimisation with tzap
 
 Pass `optimize` to either builder to get a Clifford+T circuit optimised by
